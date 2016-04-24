@@ -1,31 +1,28 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 
-	"github.com/otoolep/hraftd/http"
 	"github.com/otoolep/hraftd/store"
+	"net/rpc"
 )
 
 // Command line defaults
 const (
-	DefaultHTTPAddr = ":11000"
+	DefaultRPCAddr  = ":11000"
 	DefaultRaftAddr = ":12000"
 )
 
 // Command line parameters
-var httpAddr string
+var rpcAddr string
 var raftAddr string
 var joinAddr string
 
 func init() {
-	flag.StringVar(&httpAddr, "haddr", DefaultHTTPAddr, "Set the HTTP bind address")
+	flag.StringVar(&rpcAddr, "haddr", DefaultRPCAddr, "Set the RPC bind address")
 	flag.StringVar(&raftAddr, "raddr", DefaultRaftAddr, "Set Raft bind address")
 	flag.StringVar(&joinAddr, "join", "", "Set join address, if any")
 	flag.Usage = func() {
@@ -57,9 +54,9 @@ func main() {
 		log.Fatalf("failed to open store: %s", err.Error())
 	}
 
-	h := httpd.New(httpAddr, s)
-	if err := h.Start(); err != nil {
-		log.Fatalf("failed to start HTTP service: %s", err.Error())
+	rpcInstance := NewRPC(rpcAddr, s)
+	if err := rpcInstance.start(); err != nil {
+		log.Fatalf("failed to start RPC service: %s", err.Error())
 	}
 
 	// If join was specified, make the join request.
@@ -76,15 +73,29 @@ func main() {
 }
 
 func join(joinAddr, raftAddr string) error {
-	b, err := json.Marshal(map[string]string{"addr": raftAddr})
+
+	client, err := rpc.DialHTTP("tcp", joinAddr)
+
 	if err != nil {
+		log.Printf("error (%s) dialing %s:\n", err, joinAddr)
 		return err
 	}
-	resp, err := http.Post(fmt.Sprintf("http://%s/join", joinAddr), "application-type/json", bytes.NewReader(b))
+
+	// Synchronous call
+	var reply bool
+	err = client.Call("Service.Join", raftAddr, &reply)
+
 	if err != nil {
+		log.Printf("error invoking join %s:\n", err)
 		return err
 	}
-	defer resp.Body.Close()
+
+	if !reply {
+		unknownErr := fmt.Errorf("unknown error in rpc join call")
+		log.Println(unknownErr)
+		return unknownErr
+	}
 
 	return nil
+
 }

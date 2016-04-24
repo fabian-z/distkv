@@ -118,8 +118,12 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Set sets the value for the given key.
 func (s *Store) Set(key string, value []byte) error {
+
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not leader")
+
+		//TODO s.raft.Leader()
+		//Use net/rpc to build an interface and use it here
 	}
 
 	c := &command{
