@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -8,7 +9,7 @@ import (
 )
 
 func Test_StoreOpen(t *testing.T) {
-	s := New()
+	s := NewStore()
 	tmpDir, _ := ioutil.TempDir("", "store_test")
 	defer os.RemoveAll(tmpDir)
 
@@ -24,7 +25,7 @@ func Test_StoreOpen(t *testing.T) {
 }
 
 func Test_StoreOpenSingleNode(t *testing.T) {
-	s := New()
+	s := NewStore()
 	tmpDir, _ := ioutil.TempDir("", "store_test")
 	defer os.RemoveAll(tmpDir)
 
@@ -41,7 +42,7 @@ func Test_StoreOpenSingleNode(t *testing.T) {
 	// Simple way to ensure there is a leader.
 	time.Sleep(3 * time.Second)
 
-	if err := s.Set("foo", "bar"); err != nil {
+	if err := s.Set("foo", []byte("bar")); err != nil {
 		t.Fatalf("failed to set key: %s", err.Error())
 	}
 
@@ -51,8 +52,8 @@ func Test_StoreOpenSingleNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get key: %s", err.Error())
 	}
-	if value != "bar" {
-		t.Fatalf("key has wrong value: %s", value)
+	if !bytes.Equal(value, []byte("bar")) {
+		t.Fatalf("key has wrong value: %s", string(value))
 	}
 
 	if err := s.Delete("foo"); err != nil {
@@ -65,8 +66,8 @@ func Test_StoreOpenSingleNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get key: %s", err.Error())
 	}
-	if value != "" {
-		t.Fatalf("key has wrong value: %s", value)
+	if !bytes.Equal(value, []byte{}) {
+		t.Fatalf("key has wrong value: %s", string(value))
 	}
 
 }
