@@ -1,4 +1,4 @@
-// RPC provides the cluster communication for accessing the distributed key-value store.
+// service.go provides the RPC cluster communication for accessing the distributed key-value store.
 // It also provides the endpoint for other nodes to join an existing cluster.
 package main
 
@@ -11,7 +11,7 @@ import (
 )
 
 // Store is the interface Raft-backed key-value stores must implement.
-type Store interface {
+type StoreInterface interface {
 	// Get returns the value for the given key.
 	Get(key string) ([]byte, error)
 
@@ -30,7 +30,7 @@ type Service struct {
 	addr string
 	ln   net.Listener
 
-	store Store
+	store StoreInterface
 }
 
 //TODO support []KeyValue in Set
@@ -40,7 +40,7 @@ type KeyValue struct {
 }
 
 // New returns an uninitialized HTTP service.
-func NewRPC(addr string, store Store) *Service {
+func NewRPC(addr string, store StoreInterface) *Service {
 	return &Service{
 		addr:  addr,
 		store: store,

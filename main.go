@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 
-	"github.com/otoolep/hraftd/store"
 	"net/rpc"
 )
 
@@ -47,7 +46,7 @@ func main() {
 	}
 	os.MkdirAll(raftDir, 0700)
 
-	s := store.New()
+	s := NewStore()
 	s.RaftDir = raftDir
 	s.RaftBind = raftAddr
 	if err := s.Open(joinAddr == ""); err != nil {

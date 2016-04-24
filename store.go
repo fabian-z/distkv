@@ -1,10 +1,10 @@
-// Package store provides a simple distributed key-value store. The keys and
+// store.go provides a simple distributed key-value store. The keys and
 // associated values are changed via distributed consensus, meaning that the
 // values are changed only when a majority of nodes in the cluster agree on
 // the new value.
 //
 // Distributed consensus is provided via the Raft algorithm.
-package store
+package main
 
 import (
 	"bytes"
@@ -48,7 +48,7 @@ type Store struct {
 }
 
 // New returns a new Store.
-func New() *Store {
+func NewStore() *Store {
 	return &Store{
 		m:      make(map[string][]byte),
 		logger: log.New(os.Stderr, "[store] ", log.LstdFlags),
