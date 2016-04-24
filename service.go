@@ -39,7 +39,7 @@ type KeyValue struct {
 	Value []byte
 }
 
-// New returns an uninitialized HTTP service.
+// New returns an uninitialized RPC service.
 func NewRPC(addr string, store StoreInterface) *Service {
 	return &Service{
 		addr:  addr,
@@ -61,7 +61,7 @@ func (s *Service) start() error {
 
 	s.ln = ln
 
-	go log.Println(http.Serve(ln, nil))
+	go http.Serve(ln, nil)
 
 	return nil
 }
