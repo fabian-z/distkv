@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,9 +30,9 @@ const (
 )
 
 type command struct {
-	Op    string `json:"op,omitempty"`
-	Key   string `json:"key,omitempty"`
-	Value []byte `json:"value,omitempty"`
+	Op    string
+	Key   string
+	Value []byte
 }
 
 // Store is a simple key-value store, where all changes are made via Raft consensus.
@@ -131,12 +132,13 @@ func (s *Store) Set(key string, value []byte) error {
 		Key:   key,
 		Value: value,
 	}
-	b, err := json.Marshal(c)
+
+	sc, err := serializeCommand(c)
 	if err != nil {
 		return err
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
+	f := s.raft.Apply(sc, raftTimeout)
 	if err, ok := f.(error); ok {
 		return err
 	}
@@ -154,12 +156,12 @@ func (s *Store) Delete(key string) error {
 		Op:  "delete",
 		Key: key,
 	}
-	b, err := json.Marshal(c)
+	sc, err := serializeCommand(c)
 	if err != nil {
 		return err
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
+	f := s.raft.Apply(sc, raftTimeout)
 	if err, ok := f.(error); ok {
 		return err
 	}
@@ -184,18 +186,20 @@ type fsm Store
 
 // Apply applies a Raft log entry to the key-value store.
 func (f *fsm) Apply(l *raft.Log) interface{} {
-	var c command
-	if err := json.Unmarshal(l.Data, &c); err != nil {
-		panic(fmt.Sprintf("failed to unmarshal command: %s", err.Error()))
+	dsc, err := deserializeCommand(l.Data)
+
+	if err != nil {
+		log.Fatalf("error in deserializeCommand: %s\n", err)
 	}
 
-	switch c.Op {
+	switch dsc.Op {
 	case "set":
-		return f.applySet(c.Key, c.Value)
+		return f.applySet(dsc.Key, dsc.Value)
 	case "delete":
-		return f.applyDelete(c.Key)
+		return f.applyDelete(dsc.Key)
 	default:
-		panic(fmt.Sprintf("unrecognized command op: %s", c.Op))
+		log.Fatal("unrecognized command op: %s", dsc.Op)
+		return nil
 	}
 }
 
@@ -215,7 +219,11 @@ func (f *fsm) Snapshot() (raft.FSMSnapshot, error) {
 // Restore stores the key-value store to a previous state.
 func (f *fsm) Restore(rc io.ReadCloser) error {
 	o := make(map[string][]byte)
-	if err := json.NewDecoder(rc).Decode(&o); err != nil {
+
+	decoder := gob.NewDecoder(rc)
+	err := decoder.Decode(&o)
+
+	if err != nil {
 		return err
 	}
 
@@ -246,13 +254,18 @@ type fsmSnapshot struct {
 func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	err := func() error {
 		// Encode data.
-		b, err := json.Marshal(f.store)
+
+		buf := bytes.NewBuffer([]byte{})
+
+		encoder := gob.NewEncoder(buf)
+		err := encoder.Encode(f.store)
+
 		if err != nil {
 			return err
 		}
 
 		// Write data to sink.
-		if _, err := sink.Write(b); err != nil {
+		if _, err := sink.Write(buf.Bytes()); err != nil {
 			return err
 		}
 
@@ -291,4 +304,41 @@ func readPeersJSON(path string) ([]string, error) {
 	}
 
 	return peers, nil
+}
+
+func serializeCommand(c *command) ([]byte, error) {
+
+	buf := bytes.NewBuffer([]byte{})
+
+	encoder := gob.NewEncoder(buf)
+	err := encoder.Encode(c)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+
+}
+
+func deserializeCommand(sc []byte) (*command, error) {
+
+	if len(sc) < 1 {
+		return nil, fmt.Errorf("Zero length serialization passed")
+	}
+
+	buf := bytes.NewBuffer(sc)
+
+	decoder := gob.NewDecoder(buf)
+
+	command := &command{}
+
+	err := decoder.Decode(command)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return command, nil
+
 }
