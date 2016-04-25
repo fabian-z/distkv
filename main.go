@@ -53,7 +53,7 @@ func main() {
 		log.Fatalf("failed to open store: %s", err.Error())
 	}
 
-	rpcInstance := NewRPC(rpcAddr, *s)
+	rpcInstance := NewRPC(rpcAddr, s)
 	if err := rpcInstance.start(); err != nil {
 		log.Fatalf("failed to start RPC service: %s", err.Error())
 	}

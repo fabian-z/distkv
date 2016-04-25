@@ -264,9 +264,14 @@ func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 			return err
 		}
 
+		var n int
 		// Write data to sink.
-		if _, err := sink.Write(buf.Bytes()); err != nil {
+		if n, err = sink.Write(buf.Bytes()); err != nil {
 			return err
+		}
+
+		if n != buf.Len() {
+			return fmt.Errorf("Incomplete write for snapshot")
 		}
 
 		// Close the sink.
