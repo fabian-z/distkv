@@ -14,7 +14,6 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -76,15 +75,8 @@ func (s *Store) Open(enableSingle bool) error {
 		config.DisableBootstrapAfterElect = false
 	}
 
-	// Setup Raft communication.
-	addr, err := net.ResolveTCPAddr("tcp", s.RaftBind)
-	if err != nil {
-		return err
-	}
-	transport, err := raft.NewTCPTransport(s.RaftBind, addr, 3, 10*time.Second, os.Stderr)
-	if err != nil {
-		return err
-	}
+	//TODO add error return to newSSHTransport
+	transport := newSSHTransport(s.RaftBind, s.RaftDir)
 
 	// Create peer storage.
 	peerStore := raft.NewJSONPeers(s.RaftDir, transport)
