@@ -112,6 +112,14 @@ func (s *Store) Open(enableSingle bool) error {
 				return
 			}
 
+			if s.raft.State() != raft.Leader {
+				//TODO Forward to current leader?
+				log.Println("No leader but received join request. Ignoring:", *leaderMessage.cmd)
+				joinMessage.returnChan <- false
+				close(joinMessage.returnChan)
+				continue
+			}
+
 			err := s.join(joinMessage.joinAddr)
 
 			if err != nil {
