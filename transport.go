@@ -31,7 +31,14 @@ type peerPublicKeys struct {
 
 const bogusAddress string = "127.0.0.1:0"
 
-func newSSHTransport(bindAddr string, raftDir string) *raft.NetworkTransport {
+const joinRequestType string = "joinRequest"
+
+type joinMessage struct {
+	joinAddr   string
+	returnChan chan bool
+}
+
+func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Signer, *raft.NetworkTransport) {
 
 	s := new(sshTransport)
 	s.raftDir = raftDir
@@ -82,6 +89,8 @@ func newSSHTransport(bindAddr string, raftDir string) *raft.NetworkTransport {
 		clientConfig: sshClientConfig,
 	}
 
+	joinChan := make(chan joinMessage)
+
 	go func() {
 
 		for {
@@ -104,7 +113,7 @@ func newSSHTransport(bindAddr string, raftDir string) *raft.NetworkTransport {
 					return
 				}
 				// The incoming Request channel must be serviced.
-				go ssh.DiscardRequests(reqs)
+				go handleRequests(joinChan, reqs)
 
 				// Service the incoming Channel channel.
 				for newChannel := range chans {
@@ -135,8 +144,33 @@ func newSSHTransport(bindAddr string, raftDir string) *raft.NetworkTransport {
 
 	}()
 
-	return raft.NewNetworkTransport(s.listener, 5, 10*time.Second, nil)
+	return joinChan, private, raft.NewNetworkTransport(s.listener, 5, 10*time.Second, nil)
 
+}
+
+func handleRequests(joinChannel chan joinMessage, reqs <-chan *ssh.Request) {
+
+	for req := range reqs {
+		if req.Type == joinRequestType {
+			log.Printf("Received out-of-band request: %+v", req)
+
+			returnChan := make(chan bool)
+			msg := joinMessage{joinAddr: string(req.Payload), returnChan: returnChan}
+			joinChannel <- msg
+
+			timeout := time.After(15 * time.Second)
+			select {
+			case response := <-returnChan:
+				err := req.Reply(response, req.Payload)
+				if err != nil {
+					log.Println("Error replying to join request for:", string(req.Payload))
+				}
+			case <-timeout:
+				log.Println("Timed out processing join request for:", string(req.Payload))
+			}
+
+		}
+	}
 }
 
 func (transport *sshTransport) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {

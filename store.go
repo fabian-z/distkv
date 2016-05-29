@@ -21,6 +21,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -36,8 +37,9 @@ type command struct {
 
 // Store is a simple key-value store, where all changes are made via Raft consensus.
 type Store struct {
-	RaftDir  string
-	RaftBind string
+	RaftDir    string
+	RaftBind   string
+	privateKey ssh.Signer
 
 	mu sync.Mutex
 	m  map[string][]byte // The key-value store for the system.
@@ -76,7 +78,8 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	//TODO add error return to newSSHTransport
-	transport := newSSHTransport(s.RaftBind, s.RaftDir)
+	joinChannel, privateKey, transport := newSSHTransport(s.RaftBind, s.RaftDir)
+	s.privateKey = privateKey
 
 	// Create peer storage.
 	peerStore := raft.NewJSONPeers(s.RaftDir, transport)
@@ -99,6 +102,30 @@ func (s *Store) Open(enableSingle bool) error {
 		return fmt.Errorf("new raft: %s", err)
 	}
 	s.raft = ra
+
+	go func() {
+
+		for {
+			joinRequest, notClosed := <-joinChannel
+
+			if !notClosed {
+				return
+			}
+
+			err := s.Join(joinRequest.joinAddr)
+
+			if err != nil {
+				log.Println("Error during join request:", err)
+				joinRequest.returnChan <- false
+			} else {
+				joinRequest.returnChan <- true
+			}
+
+			close(joinRequest.returnChan)
+		}
+
+	}()
+
 	return nil
 }
 
