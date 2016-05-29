@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"github.com/hashicorp/raft"
 	"golang.org/x/crypto/ssh"
 	"io/ioutil"
@@ -17,11 +18,10 @@ import (
 )
 
 type sshTransport struct {
-	raftDir      string
-	peerPubkeys  peerPublicKeys
-	listener     *streamSSHLayer
-	serverConfig *ssh.ServerConfig
-	config       *ssh.ClientConfig
+	peerPubkeys   *peerPublicKeys
+	joinMessage   chan joinMessage
+	leaderMessage chan leaderMessage
+	privateKey    ssh.Signer
 }
 
 type peerPublicKeys struct {
@@ -31,17 +31,27 @@ type peerPublicKeys struct {
 
 const bogusAddress string = "127.0.0.1:0"
 
-const joinRequestType string = "joinRequest"
+const (
+	maxPoolConnections        = 5
+	connectionTimeout         = 10 * time.Second
+	protocolUser       string = "raft"
+	joinRequestType    string = "joinRequest"
+	leaderMessageType  string = "leaderMessage"
+)
 
 type joinMessage struct {
 	joinAddr   string
 	returnChan chan bool
 }
 
-func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Signer, *raft.NetworkTransport) {
+type leaderMessage struct {
+	cmd        *command
+	returnChan chan bool
+}
+
+func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.NetworkTransport) {
 
 	s := new(sshTransport)
-	s.raftDir = raftDir
 
 	//TODO load peerPubkeys from json
 
@@ -51,10 +61,10 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 		PublicKeyCallback: s.keyAuth,
 	}
 
-	privateBytes, err := ioutil.ReadFile(filepath.Join(s.raftDir, "id_rsa"))
+	privateBytes, err := ioutil.ReadFile(filepath.Join(raftDir, "id_rsa"))
 	if err != nil {
 		log.Println("Failed to load private key, trying to generate a new pair")
-		privateBytes = s.generateSSHKey()
+		privateBytes = generateSSHKey(raftDir)
 	}
 
 	private, err := ssh.ParsePrivateKey(privateBytes)
@@ -66,6 +76,7 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 
 	log.Println("Node public key is: ", private.PublicKey().Type(), base64.StdEncoding.EncodeToString(pubBytes))
 
+	s.privateKey = private
 	config.AddHostKey(private)
 
 	// Once a ServerConfig has been configured, connections can be
@@ -83,13 +94,14 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 		},
 	}
 
-	s.listener = &streamSSHLayer{
+	raftListener := &streamSSHLayer{
 		sshListener:  listener,
 		incoming:     make(chan sshConn, 15),
 		clientConfig: sshClientConfig,
 	}
 
-	joinChan := make(chan joinMessage)
+	s.joinMessage = make(chan joinMessage)
+	s.leaderMessage = make(chan leaderMessage)
 
 	go func() {
 
@@ -113,7 +125,7 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 					return
 				}
 				// The incoming Request channel must be serviced.
-				go handleRequests(joinChan, reqs)
+				go handleRequests(s.joinMessage, s.leaderMessage, reqs)
 
 				// Service the incoming Channel channel.
 				for newChannel := range chans {
@@ -131,7 +143,7 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 
 					go ssh.DiscardRequests(requests)
 
-					s.listener.incoming <- sshConn{
+					raftListener.incoming <- sshConn{
 						channel,
 						sshConnection.LocalAddr(),
 						sshConnection.RemoteAddr(),
@@ -144,15 +156,15 @@ func newSSHTransport(bindAddr string, raftDir string) (chan joinMessage, ssh.Sig
 
 	}()
 
-	return joinChan, private, raft.NewNetworkTransport(s.listener, 5, 10*time.Second, nil)
+	return s, raft.NewNetworkTransport(raftListener, maxPoolConnections, connectionTimeout, nil)
 
 }
 
-func handleRequests(joinChannel chan joinMessage, reqs <-chan *ssh.Request) {
+func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderMessage, reqs <-chan *ssh.Request) {
 
 	for req := range reqs {
+		log.Printf("Received out-of-band request: %+v", req)
 		if req.Type == joinRequestType {
-			log.Printf("Received out-of-band request: %+v", req)
 
 			returnChan := make(chan bool)
 			msg := joinMessage{joinAddr: string(req.Payload), returnChan: returnChan}
@@ -167,9 +179,55 @@ func handleRequests(joinChannel chan joinMessage, reqs <-chan *ssh.Request) {
 				}
 			case <-timeout:
 				log.Println("Timed out processing join request for:", string(req.Payload))
+				err := req.Reply(false, []byte{})
+				if err != nil {
+					log.Println("Error replying to join request for:", string(req.Payload))
+				}
 			}
 
+			continue
+
 		}
+
+		if req.Type == leaderMessageType {
+
+			returnChan := make(chan bool)
+
+			//Decode payload
+
+			cmd, err := deserializeCommand(req.Payload)
+
+			if err != nil {
+				log.Println("Error deserializing payload:", err)
+				err := req.Reply(false, []byte{})
+				if err != nil {
+					log.Println("Error replying to leader request for:", string(req.Payload))
+				}
+			}
+
+			msg := leaderMessage{cmd: cmd, returnChan: returnChan}
+			leaderMessageChan <- msg
+
+			timeout := time.After(connectionTimeout)
+			select {
+			case response := <-returnChan:
+				err := req.Reply(response, []byte{})
+				if err != nil {
+					log.Println("Error replying to leader request for:", cmd)
+				}
+			case <-timeout:
+				log.Println("Timed out processing leader request for:", cmd)
+				err := req.Reply(false, []byte{})
+				if err != nil {
+					log.Println("Error replying to leader request for:", cmd)
+				}
+			}
+
+			continue
+
+		}
+
+		log.Printf("Did not handle out of band request: %+v", req)
 	}
 }
 
@@ -181,10 +239,15 @@ func (transport *sshTransport) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 	//TODO check public key against transport.peerPubkeys
 	//Endpoint IP
 	//key.Type() + " " + base64.StdEncoding.EncodeToString(key.Marshal())
+
+	if conn.User() != "raft" {
+		return nil, errors.New("Wrong user for protocol offered by server")
+	}
+
 	return nil, nil
 }
 
-func (transport *sshTransport) generateSSHKey() (privateKeyPem []byte) {
+func generateSSHKey(targetDir string) (privateKeyPem []byte) {
 
 	//generate 4096 bit rsa keypair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
@@ -201,11 +264,13 @@ func (transport *sshTransport) generateSSHKey() (privateKeyPem []byte) {
 
 	privateKeyPem = pem.EncodeToMemory(&privateKeyBlock)
 
-	//persist keypair to raftDir
-	err = ioutil.WriteFile(filepath.Join(transport.raftDir, "id_rsa"), privateKeyPem, 0600)
+	if len(targetDir) > 0 {
+		//persist key to raftDir
+		err = ioutil.WriteFile(filepath.Join(targetDir, "id_rsa"), privateKeyPem, 0600)
 
-	if err != nil {
-		log.Fatal("Error persisting generated ssh private key:", err)
+		if err != nil {
+			log.Fatal("Error persisting generated ssh private key:", err)
+		}
 	}
 
 	return

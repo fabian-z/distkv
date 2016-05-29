@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // Command line defaults
@@ -15,7 +13,6 @@ const (
 )
 
 // Command line parameters
-var rpcAddr string
 var raftAddr string
 var joinAddr string
 
@@ -53,7 +50,7 @@ func main() {
 
 	// If join was specified, make the join request.
 	if joinAddr != "" {
-		if err := join(joinAddr, raftAddr, s.privateKey); err != nil {
+		if err := s.Join(joinAddr, raftAddr); err != nil {
 			log.Fatalf("failed to join node at %s: %s", joinAddr, err.Error())
 		}
 	}
@@ -62,35 +59,4 @@ func main() {
 
 	// Block forever.
 	select {}
-}
-
-func join(joinAddr, raftAddr string, privateKey ssh.Signer) error {
-
-	sshClientConfig := &ssh.ClientConfig{
-		User: "raft",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(privateKey),
-		},
-	}
-
-	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
-	if err != nil {
-		log.Printf("Server dial error: %s\n", err)
-		return err
-	}
-
-	reply, _, err := serverConn.SendRequest(joinRequestType, true, []byte(raftAddr))
-
-	if err != nil {
-		log.Println("Error sending out-of-band join request:", err)
-		return err
-	}
-
-	if reply != true {
-		log.Printf("Error adding peer on join node %s: %s\n", err)
-		return err
-	}
-
-	return nil
-
 }

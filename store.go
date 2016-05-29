@@ -78,11 +78,11 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	//TODO add error return to newSSHTransport
-	joinChannel, privateKey, transport := newSSHTransport(s.RaftBind, s.RaftDir)
-	s.privateKey = privateKey
+	sshTransport, raftTransport := newSSHTransport(s.RaftBind, s.RaftDir)
+	s.privateKey = sshTransport.privateKey
 
 	// Create peer storage.
-	peerStore := raft.NewJSONPeers(s.RaftDir, transport)
+	peerStore := raft.NewJSONPeers(s.RaftDir, raftTransport)
 
 	// Create the snapshot store. This allows the Raft to truncate the log.
 	snapshots, err := raft.NewFileSnapshotStore(s.RaftDir, retainSnapshotCount, os.Stderr)
@@ -97,7 +97,7 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	// Instantiate the Raft systems.
-	ra, err := raft.NewRaft(config, (*fsm)(s), logStore, logStore, snapshots, peerStore, transport)
+	ra, err := raft.NewRaft(config, (*fsm)(s), logStore, logStore, snapshots, peerStore, raftTransport)
 	if err != nil {
 		return fmt.Errorf("new raft: %s", err)
 	}
@@ -106,27 +106,135 @@ func (s *Store) Open(enableSingle bool) error {
 	go func() {
 
 		for {
-			joinRequest, notClosed := <-joinChannel
+			joinMessage, notClosed := <-sshTransport.joinMessage
 
 			if !notClosed {
 				return
 			}
 
-			err := s.Join(joinRequest.joinAddr)
+			err := s.join(joinMessage.joinAddr)
 
 			if err != nil {
 				log.Println("Error during join request:", err)
-				joinRequest.returnChan <- false
+				joinMessage.returnChan <- false
 			} else {
-				joinRequest.returnChan <- true
+				joinMessage.returnChan <- true
 			}
 
-			close(joinRequest.returnChan)
+			close(joinMessage.returnChan)
+		}
+
+	}()
+
+	go func() {
+
+		for {
+			leaderMessage, notClosed := <-sshTransport.leaderMessage
+
+			if !notClosed {
+				return
+			}
+
+			if s.raft.State() != raft.Leader {
+				//TODO Forward to current leader?
+				log.Println("No leader but received leader request. Ignoring:", *leaderMessage.cmd)
+				leaderMessage.returnChan <- false
+				close(leaderMessage.returnChan)
+				continue
+			}
+
+			c := leaderMessage.cmd
+			sc, err := serializeCommand(c)
+			if err != nil {
+				log.Println("Error serializing command in leader request:", *leaderMessage.cmd)
+				leaderMessage.returnChan <- false
+				close(leaderMessage.returnChan)
+				continue
+			}
+
+			f := s.raft.Apply(sc, raftTimeout)
+			if err, ok := f.(error); ok {
+				log.Println("Error applying command in leader request:", *leaderMessage.cmd, err)
+				leaderMessage.returnChan <- false
+				close(leaderMessage.returnChan)
+				continue
+			}
+
+			leaderMessage.returnChan <- true
+			close(leaderMessage.returnChan)
 		}
 
 	}()
 
 	return nil
+}
+
+func (s *Store) Join(joinAddr, raftAddr string) error {
+
+	sshClientConfig := &ssh.ClientConfig{
+		User: "raft",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(s.privateKey),
+		},
+	}
+
+	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
+	if err != nil {
+		log.Printf("Server dial error: %s\n", err)
+		return err
+	}
+
+	reply, _, err := serverConn.SendRequest(joinRequestType, true, []byte(raftAddr))
+
+	if err != nil {
+		log.Println("Error sending out-of-band join request:", err)
+		return err
+	}
+
+	if reply != true {
+		log.Printf("Error adding peer on join node %s: %s\n", err)
+		return err
+	}
+
+	return nil
+
+}
+
+func (s *Store) leaderRequest(op *command) error {
+
+	sshClientConfig := &ssh.ClientConfig{
+		User: "raft",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(s.privateKey),
+		},
+	}
+
+	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
+	if err != nil {
+		log.Printf("Server dial error: %s\n", err)
+		return err
+	}
+
+	sc, err := serializeCommand(op)
+	if err != nil {
+		log.Printf("Command serialization error: %s\n", err)
+		return err
+	}
+
+	reply, _, err := serverConn.SendRequest(leaderMessageType, true, sc)
+
+	if err != nil {
+		log.Println("Error sending out-of-band leader request:", err)
+		return err
+	}
+
+	if reply != true {
+		log.Printf("Error executing command on leader node %s: %s\n", err)
+		return err
+	}
+
+	return nil
+
 }
 
 // Get returns the value for the given key.
@@ -190,7 +298,7 @@ func (s *Store) Delete(key string) error {
 
 // Join joins a node, located at addr, to this store. The node must be ready to
 // respond to Raft communications at that address.
-func (s *Store) Join(addr string) error {
+func (s *Store) join(addr string) error {
 	s.logger.Printf("received join request for remote node as %s", addr)
 
 	f := s.raft.AddPeer(addr)
@@ -309,7 +417,9 @@ func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	return nil
 }
 
-func (f *fsmSnapshot) Release() {}
+func (f *fsmSnapshot) Release() {
+	//TODO snapshot release function
+}
 
 func readPeersJSON(path string) ([]string, error) {
 	b, err := ioutil.ReadFile(path)
