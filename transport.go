@@ -29,7 +29,7 @@ type sshTransport struct {
 
 type peerPublicKeys struct {
 	sync.RWMutex
-	pubkeys []ssh.PublicKey
+	pubkeys []ssh.PublicKey // may or may not contain this nodes pubkey
 }
 
 const bogusAddress string = "127.0.0.1:0"
@@ -52,7 +52,7 @@ type leaderMessage struct {
 	returnChan chan bool
 }
 
-func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.NetworkTransport) {
+func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.NetworkTransport, error) {
 
 	s := new(sshTransport)
 	s.peerPubkeys = new(peerPublicKeys)
@@ -71,7 +71,8 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 	private, err := ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
-		log.Fatal("Failed to parse private key:", err)
+		log.Println("Failed to parse private key:", err)
+		return nil, nil, err
 	}
 
 	pubBytes := ssh.Marshal(private.PublicKey())
@@ -84,8 +85,8 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 	publicKeys, err := readAuthorizedPeerKeys((filepath.Join(raftDir, "authorized.keys")))
 
 	if err != nil && err != NoAuthorizedPeers {
-		log.Println("Error reading authorized peer keys in newSSHTransport")
-		return nil, nil
+		log.Println("Error reading authorized peer keys in newSSHTransport:", err)
+		return nil, nil, err
 	}
 
 	if err == NoAuthorizedPeers || len(publicKeys) < 1 {
@@ -93,10 +94,11 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 		err := ioutil.WriteFile((filepath.Join(raftDir, "authorized.keys")), ssh.MarshalAuthorizedKey(private.PublicKey()), 0644)
 
 		if err != nil {
-			log.Fatal("No public keys and error writing out new authorized key file")
+			log.Println("No public keys and error writing out new authorized key file:", err)
+			return nil, nil, err
 		}
 
-		log.Fatalf("Written out initial '%s', copy this to other nothes to initialize keys\n", filepath.Join(raftDir, "authorized.keys"))
+		log.Printf("Written out initial '%s', copy this key to other nodes to initialize keys\n", filepath.Join(raftDir, "authorized.keys"))
 
 	}
 
@@ -111,7 +113,8 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 	listener, err := net.Listen("tcp", bindAddr)
 
 	if err != nil {
-		log.Fatal("failed to listen for connection on", bindAddr, ":", err)
+		log.Println("failed to listen for connection on", bindAddr, ":", err)
+		return nil, nil, err
 	}
 
 	sshClientConfig := &ssh.ClientConfig{
@@ -184,7 +187,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 	}()
 
-	return s, raft.NewNetworkTransport(raftListener, maxPoolConnections, connectionTimeout, nil)
+	return s, raft.NewNetworkTransport(raftListener, maxPoolConnections, connectionTimeout, nil), nil
 
 }
 

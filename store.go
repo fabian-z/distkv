@@ -85,7 +85,13 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	//TODO add error return to newSSHTransport
-	sshTransport, raftTransport := newSSHTransport(s.RaftBind, s.RaftDir)
+	sshTransport, raftTransport, err := newSSHTransport(s.RaftBind, s.RaftDir)
+
+	if err != nil {
+		log.Println("Error initializing ssh transport:", err)
+		return err
+	}
+
 	s.authMethodPubKey = ssh.PublicKeys(sshTransport.privateKey)
 	s.checkHostKey = sshTransport.checkHostKey
 
