@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
 	"golang.org/x/crypto/ssh"
+	"net"
 )
 
 const (
@@ -42,9 +43,10 @@ type command struct {
 
 // Store is a simple key-value store, where all changes are made via Raft consensus.
 type Store struct {
-	RaftDir    string
-	RaftBind   string
-	privateKey ssh.Signer
+	RaftDir          string
+	RaftBind         string
+	authMethodPubKey ssh.AuthMethod
+	checkHostKey     func(addr string, remote net.Addr, key ssh.PublicKey) error
 
 	mu sync.Mutex
 	m  map[string][]byte // The key-value store for the system.
@@ -84,7 +86,8 @@ func (s *Store) Open(enableSingle bool) error {
 
 	//TODO add error return to newSSHTransport
 	sshTransport, raftTransport := newSSHTransport(s.RaftBind, s.RaftDir)
-	s.privateKey = sshTransport.privateKey
+	s.authMethodPubKey = ssh.PublicKeys(sshTransport.privateKey)
+	s.checkHostKey = sshTransport.checkHostKey
 
 	// Create peer storage.
 	peerStore := raft.NewJSONPeers(s.RaftDir, raftTransport)
@@ -187,8 +190,9 @@ func (s *Store) Join(joinAddr, raftAddr string) error {
 	sshClientConfig := &ssh.ClientConfig{
 		User: "raft",
 		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(s.privateKey),
+			s.authMethodPubKey,
 		},
+		HostKeyCallback: s.checkHostKey,
 	}
 
 	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
@@ -218,11 +222,12 @@ func (s *Store) leaderRequest(op *command) error {
 	sshClientConfig := &ssh.ClientConfig{
 		User: "raft",
 		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(s.privateKey),
+			s.authMethodPubKey,
 		},
+		HostKeyCallback: s.checkHostKey,
 	}
 
-	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
+	serverConn, err := ssh.Dial("tcp", s.raft.Leader(), sshClientConfig)
 	if err != nil {
 		log.Printf("Server dial error: %s\n", err)
 		return err
@@ -251,6 +256,7 @@ func (s *Store) leaderRequest(op *command) error {
 }
 
 // Get returns the value for the given key.
+// TODO implement strongly consistent read with extra argument or func
 func (s *Store) Get(key string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -260,17 +266,16 @@ func (s *Store) Get(key string) ([]byte, error) {
 // Set sets the value for the given key.
 func (s *Store) Set(key string, value []byte) error {
 
-	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("not leader")
-
-		//TODO s.raft.Leader()
-		//Use net/rpc to build an interface and use it here
-	}
-
 	c := &command{
 		Op:    "set",
 		Key:   key,
 		Value: value,
+	}
+
+	if s.raft.State() != raft.Leader {
+		//return fmt.Errorf("not leader")
+
+		return s.leaderRequest(c)
 	}
 
 	sc, err := serializeCommand(c)
@@ -288,14 +293,18 @@ func (s *Store) Set(key string, value []byte) error {
 
 // Delete deletes the given key.
 func (s *Store) Delete(key string) error {
-	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("not leader")
-	}
 
 	c := &command{
 		Op:  "delete",
 		Key: key,
 	}
+
+	if s.raft.State() != raft.Leader {
+		//return fmt.Errorf("not leader")
+
+		return s.leaderRequest(c)
+	}
+
 	sc, err := serializeCommand(c)
 	if err != nil {
 		return err
