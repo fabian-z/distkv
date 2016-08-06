@@ -5,7 +5,6 @@ import (
 	"crypto/rsa"
 	"crypto/subtle"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"github.com/hashicorp/raft"
@@ -75,9 +74,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 		return nil, nil, err
 	}
 
-	pubBytes := ssh.Marshal(private.PublicKey())
-
-	log.Println("Node public key is: ", private.PublicKey().Type(), base64.StdEncoding.EncodeToString(pubBytes))
+	log.Println("Node public key is: ", string(ssh.MarshalAuthorizedKey(private.PublicKey())))
 
 	s.privateKey = private
 	config.AddHostKey(private)
