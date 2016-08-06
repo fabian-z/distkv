@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -12,7 +13,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,7 +29,7 @@ type sshTransport struct {
 
 type peerPublicKeys struct {
 	sync.RWMutex
-	pubkeys map[string]ssh.PublicKey
+	pubkeys []ssh.PublicKey
 }
 
 const bogusAddress string = "127.0.0.1:0"
@@ -52,8 +55,7 @@ type leaderMessage struct {
 func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.NetworkTransport) {
 
 	s := new(sshTransport)
-
-	//TODO load peerPubkeys from json
+	s.peerPubkeys = new(peerPublicKeys)
 
 	// An SSH server is represented by a ServerConfig, which holds
 	// certificate details and handles authentication of ServerConns.
@@ -79,6 +81,31 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 	s.privateKey = private
 	config.AddHostKey(private)
 
+	publicKeys, err := readAuthorizedPeerKeys((filepath.Join(raftDir, "authorized.keys")))
+
+	if err != nil && err != NoAuthorizedPeers {
+		log.Println("Error reading authorized peer keys in newSSHTransport")
+		return nil, nil
+	}
+
+	if err == NoAuthorizedPeers || len(publicKeys) < 1 {
+
+		err := ioutil.WriteFile((filepath.Join(raftDir, "authorized.keys")), ssh.MarshalAuthorizedKey(private.PublicKey()), 0644)
+
+		if err != nil {
+			log.Fatal("No public keys and error writing out new authorized key file")
+		}
+
+		log.Fatalf("Written out initial '%s', copy this to other nothes to initialize keys\n", filepath.Join(raftDir, "authorized.keys"))
+
+	}
+
+	log.Println("Parsed pubkeys", publicKeys)
+
+	s.peerPubkeys.Lock()
+	s.peerPubkeys.pubkeys = append(s.peerPubkeys.pubkeys, publicKeys...)
+	s.peerPubkeys.Unlock()
+
 	// Once a ServerConfig has been configured, connections can be
 	// accepted.
 	listener, err := net.Listen("tcp", bindAddr)
@@ -92,6 +119,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(private),
 		},
+		HostKeyCallback: s.checkHostKey,
 	}
 
 	raftListener := &streamSSHLayer{
@@ -157,6 +185,46 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 	}()
 
 	return s, raft.NewNetworkTransport(raftListener, maxPoolConnections, connectionTimeout, nil)
+
+}
+
+func readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
+
+	//TODO Read comment and determine valid peer addresses?
+
+	bytesRead, err := ioutil.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return
+	} else if err != nil && os.IsNotExist(err) {
+		err = NoAuthorizedPeers
+		return
+	}
+
+	if len(bytesRead) == 0 {
+		return
+	}
+
+	//nice from far but far from nice
+	bytesRead = []byte(strings.TrimSpace(string(bytesRead)))
+
+	var rest int = len(bytesRead)
+
+	for rest > 0 {
+
+		var pubkey ssh.PublicKey
+		pubkey, _, _, bytesRead, err = ssh.ParseAuthorizedKey(bytesRead)
+
+		if err != nil {
+			log.Fatal("Error parsing ssh publickey from authorized peers: ", err)
+
+		}
+
+		pubs = append(pubs, pubkey)
+		rest = len(bytesRead)
+
+	}
+
+	return
 
 }
 
@@ -234,17 +302,43 @@ func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderM
 func (transport *sshTransport) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 
 	log.Println(conn.RemoteAddr(), "authenticate with", key.Type(), "for user", conn.User())
-	log.Println(base64.StdEncoding.EncodeToString(key.Marshal()))
-
-	//TODO check public key against transport.peerPubkeys
-	//Endpoint IP
-	//key.Type() + " " + base64.StdEncoding.EncodeToString(key.Marshal())
+	//log.Println(base64.StdEncoding.EncodeToString(key.Marshal()))
 
 	if conn.User() != "raft" {
 		return nil, errors.New("Wrong user for protocol offered by server")
 	}
 
-	return nil, nil
+	transport.peerPubkeys.RLock()
+	defer transport.peerPubkeys.RUnlock()
+
+	for _, storedKey := range transport.peerPubkeys.pubkeys {
+
+		if subtle.ConstantTimeCompare(key.Marshal(), storedKey.Marshal()) == 1 {
+			return nil, nil
+		}
+
+	}
+
+	return nil, errors.New("Public key not found")
+}
+
+func (transport *sshTransport) checkHostKey(addr string, remote net.Addr, key ssh.PublicKey) error {
+
+	//TODO check addr
+
+	transport.peerPubkeys.RLock()
+	defer transport.peerPubkeys.RUnlock()
+
+	for _, storedKey := range transport.peerPubkeys.pubkeys {
+
+		if subtle.ConstantTimeCompare(key.Marshal(), storedKey.Marshal()) == 1 {
+			return nil
+		}
+
+	}
+
+	return errors.New("Public key not found")
+
 }
 
 func generateSSHKey(targetDir string) (privateKeyPem []byte) {

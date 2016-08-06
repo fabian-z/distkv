@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"errors"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
 	"golang.org/x/crypto/ssh"
@@ -27,6 +28,10 @@ import (
 const (
 	retainSnapshotCount = 2
 	raftTimeout         = 10 * time.Second
+)
+
+var (
+	NoAuthorizedPeers = errors.New("No authorized peers file")
 )
 
 type command struct {
@@ -114,7 +119,7 @@ func (s *Store) Open(enableSingle bool) error {
 
 			if s.raft.State() != raft.Leader {
 				//TODO Forward to current leader?
-				log.Println("No leader but received join request. Ignoring:", *leaderMessage.cmd)
+				log.Println("No leader but received join request. Ignoring:", joinMessage)
 				joinMessage.returnChan <- false
 				close(joinMessage.returnChan)
 				continue
