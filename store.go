@@ -4,7 +4,7 @@
 // the new value.
 //
 // Distributed consensus is provided via the Raft algorithm.
-package main
+package distkv
 
 import (
 	"bytes"
