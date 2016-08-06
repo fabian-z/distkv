@@ -84,12 +84,12 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 	publicKeys, err := readAuthorizedPeerKeys((filepath.Join(raftDir, "authorized.keys")))
 
-	if err != nil && err != NoAuthorizedPeers {
+	if err != nil && err != noAuthorizedPeers {
 		log.Println("Error reading authorized peer keys in newSSHTransport:", err)
 		return nil, nil, err
 	}
 
-	if err == NoAuthorizedPeers || len(publicKeys) < 1 {
+	if err == noAuthorizedPeers || len(publicKeys) < 1 {
 
 		err := ioutil.WriteFile((filepath.Join(raftDir, "authorized.keys")), ssh.MarshalAuthorizedKey(private.PublicKey()), 0644)
 
@@ -199,7 +199,7 @@ func readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
 	if err != nil && !os.IsNotExist(err) {
 		return
 	} else if err != nil && os.IsNotExist(err) {
-		err = NoAuthorizedPeers
+		err = noAuthorizedPeers
 		return
 	}
 

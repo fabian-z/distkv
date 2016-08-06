@@ -1,7 +1,7 @@
-// store.go provides a simple distributed key-value store. The keys and
-// associated values are changed via distributed consensus, meaning that the
-// values are changed only when a majority of nodes in the cluster agree on
-// the new value.
+// distkv provides a simple and secure distributed key-value store. The keys and
+// associated values are changed via distributed consensus over an authenticated
+// ssh channel. This means that the values are changed only when a majority of nodes
+// in the cluster agree on the new value.
 //
 // Distributed consensus is provided via the Raft algorithm.
 package distkv
@@ -32,7 +32,7 @@ const (
 )
 
 var (
-	NoAuthorizedPeers = errors.New("No authorized peers file")
+	noAuthorizedPeers = errors.New("No authorized peers file")
 )
 
 type command struct {
