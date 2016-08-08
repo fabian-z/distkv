@@ -24,6 +24,7 @@ type sshTransport struct {
 	joinMessage   chan joinMessage
 	leaderMessage chan leaderMessage
 	privateKey    ssh.Signer
+	logger        *log.Logger
 }
 
 type peerPublicKeys struct {
@@ -51,10 +52,11 @@ type leaderMessage struct {
 	returnChan chan bool
 }
 
-func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.NetworkTransport, error) {
+func newSSHTransport(bindAddr string, raftDir string, logger *log.Logger) (*sshTransport, *raft.NetworkTransport, error) {
 
 	s := new(sshTransport)
 	s.peerPubkeys = new(peerPublicKeys)
+	s.logger = logger
 
 	// An SSH server is represented by a ServerConfig, which holds
 	// certificate details and handles authentication of ServerConns.
@@ -64,25 +66,25 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 	privateBytes, err := ioutil.ReadFile(filepath.Join(raftDir, "id_rsa"))
 	if err != nil {
-		log.Println("Failed to load private key, trying to generate a new pair")
-		privateBytes = generateSSHKey(raftDir)
+		logger.Println("Failed to load private key, trying to generate a new pair")
+		privateBytes = s.generateSSHKey(raftDir)
 	}
 
 	private, err := ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
-		log.Println("Failed to parse private key:", err)
+		logger.Println("Failed to parse private key:", err)
 		return nil, nil, err
 	}
 
-	log.Println("Node public key is: ", string(ssh.MarshalAuthorizedKey(private.PublicKey())))
+	logger.Println("Node public key is: ", string(ssh.MarshalAuthorizedKey(private.PublicKey())))
 
 	s.privateKey = private
 	config.AddHostKey(private)
 
-	publicKeys, err := readAuthorizedPeerKeys((filepath.Join(raftDir, "authorized.keys")))
+	publicKeys, err := s.readAuthorizedPeerKeys((filepath.Join(raftDir, "authorized.keys")))
 
 	if err != nil && err != noAuthorizedPeers {
-		log.Println("Error reading authorized peer keys in newSSHTransport:", err)
+		logger.Println("Error reading authorized peer keys in newSSHTransport:", err)
 		return nil, nil, err
 	}
 
@@ -91,15 +93,15 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 		err := ioutil.WriteFile((filepath.Join(raftDir, "authorized.keys")), ssh.MarshalAuthorizedKey(private.PublicKey()), 0644)
 
 		if err != nil {
-			log.Println("No public keys and error writing out new authorized key file:", err)
+			logger.Println("No public keys and error writing out new authorized key file:", err)
 			return nil, nil, err
 		}
 
-		log.Printf("Written out initial '%s', copy this key to other nodes to initialize keys\n", filepath.Join(raftDir, "authorized.keys"))
+		logger.Printf("Written out initial '%s', copy this key to other nodes to initialize keys\n", filepath.Join(raftDir, "authorized.keys"))
 
 	}
 
-	log.Println("Parsed pubkeys", publicKeys)
+	logger.Println("Parsed pubkeys", publicKeys)
 
 	s.peerPubkeys.Lock()
 	s.peerPubkeys.pubkeys = append(s.peerPubkeys.pubkeys, publicKeys...)
@@ -110,7 +112,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 	listener, err := net.Listen("tcp", bindAddr)
 
 	if err != nil {
-		log.Println("failed to listen for connection on", bindAddr, ":", err)
+		logger.Println("failed to listen for connection on", bindAddr, ":", err)
 		return nil, nil, err
 	}
 
@@ -126,6 +128,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 		sshListener:  listener,
 		incoming:     make(chan sshConn, 15),
 		clientConfig: sshClientConfig,
+		logger:       s.logger,
 	}
 
 	s.joinMessage = make(chan joinMessage)
@@ -139,6 +142,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 			if err != nil {
 				//TODO improve failure path after closing listener
+				//fix fatal for library
 				log.Fatal("failed to accept incoming connection:", err)
 			}
 
@@ -148,12 +152,12 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 				// net.Conn.
 				sshConnection, chans, reqs, err := ssh.NewServerConn(nConn, config)
 				if err != nil {
-					log.Println("Failed to handshake:", err)
+					logger.Println("Failed to handshake:", err)
 					nConn.Close()
 					return
 				}
 				// The incoming Request channel must be serviced.
-				go handleRequests(s.joinMessage, s.leaderMessage, reqs)
+				go s.handleRequests(s.joinMessage, s.leaderMessage, reqs)
 
 				// Service the incoming Channel channel.
 				for newChannel := range chans {
@@ -165,7 +169,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 					channel, requests, err := newChannel.Accept()
 					if err != nil {
-						log.Println("Could not accept channel:", err)
+						logger.Println("Could not accept channel:", err)
 						continue
 					}
 
@@ -188,7 +192,7 @@ func newSSHTransport(bindAddr string, raftDir string) (*sshTransport, *raft.Netw
 
 }
 
-func readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
+func (transport *sshTransport) readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
 
 	//TODO Read comment and determine valid peer addresses?
 
@@ -215,7 +219,8 @@ func readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
 		pubkey, _, _, bytesRead, err = ssh.ParseAuthorizedKey(bytesRead)
 
 		if err != nil {
-			log.Fatal("Error parsing ssh publickey from authorized peers: ", err)
+			//TODO fix fatal for library
+			log.Fatal("Error parsing ssh publickey from authorized peers: \n", err)
 
 		}
 
@@ -228,10 +233,10 @@ func readAuthorizedPeerKeys(path string) (pubs []ssh.PublicKey, err error) {
 
 }
 
-func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderMessage, reqs <-chan *ssh.Request) {
+func (transport *sshTransport) handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderMessage, reqs <-chan *ssh.Request) {
 
 	for req := range reqs {
-		log.Printf("Received out-of-band request: %+v", req)
+		transport.logger.Printf("Received out-of-band request: %+v", req)
 		if req.Type == joinRequestType {
 
 			returnChan := make(chan bool)
@@ -243,13 +248,13 @@ func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderM
 			case response := <-returnChan:
 				err := req.Reply(response, req.Payload)
 				if err != nil {
-					log.Println("Error replying to join request for:", string(req.Payload))
+					transport.logger.Println("Error replying to join request for:", string(req.Payload))
 				}
 			case <-timeout:
-				log.Println("Timed out processing join request for:", string(req.Payload))
+				transport.logger.Println("Timed out processing join request for:", string(req.Payload))
 				err := req.Reply(false, []byte{})
 				if err != nil {
-					log.Println("Error replying to join request for:", string(req.Payload))
+					transport.logger.Println("Error replying to join request for:", string(req.Payload))
 				}
 			}
 
@@ -266,10 +271,10 @@ func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderM
 			cmd, err := deserializeCommand(req.Payload)
 
 			if err != nil {
-				log.Println("Error deserializing payload:", err)
+				transport.logger.Println("Error deserializing payload:", err)
 				err := req.Reply(false, []byte{})
 				if err != nil {
-					log.Println("Error replying to leader request for:", string(req.Payload))
+					transport.logger.Println("Error replying to leader request for:", string(req.Payload))
 				}
 			}
 
@@ -281,13 +286,13 @@ func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderM
 			case response := <-returnChan:
 				err := req.Reply(response, []byte{})
 				if err != nil {
-					log.Println("Error replying to leader request for:", cmd)
+					transport.logger.Println("Error replying to leader request for:", cmd)
 				}
 			case <-timeout:
-				log.Println("Timed out processing leader request for:", cmd)
+				transport.logger.Println("Timed out processing leader request for:", cmd)
 				err := req.Reply(false, []byte{})
 				if err != nil {
-					log.Println("Error replying to leader request for:", cmd)
+					transport.logger.Println("Error replying to leader request for:", cmd)
 				}
 			}
 
@@ -295,14 +300,13 @@ func handleRequests(joinChannel chan joinMessage, leaderMessageChan chan leaderM
 
 		}
 
-		log.Printf("Did not handle out of band request: %+v", req)
+		transport.logger.Printf("Did not handle out of band request: %+v", req)
 	}
 }
 
 func (transport *sshTransport) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 
-	log.Println(conn.RemoteAddr(), "authenticate with", key.Type(), "for user", conn.User())
-	//log.Println(base64.StdEncoding.EncodeToString(key.Marshal()))
+	transport.logger.Println(conn.RemoteAddr(), "authenticate with", key.Type(), "for user", conn.User())
 
 	if conn.User() != "raft" {
 		return nil, errors.New("Wrong user for protocol offered by server")
@@ -341,11 +345,12 @@ func (transport *sshTransport) checkHostKey(addr string, remote net.Addr, key ss
 
 }
 
-func generateSSHKey(targetDir string) (privateKeyPem []byte) {
+func (transport *sshTransport) generateSSHKey(targetDir string) (privateKeyPem []byte) {
 
 	//generate 4096 bit rsa keypair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
+		//TODO fix fatal for libary
 		log.Fatal("Error generating private key:", err)
 	}
 
@@ -363,6 +368,7 @@ func generateSSHKey(targetDir string) (privateKeyPem []byte) {
 		err = ioutil.WriteFile(filepath.Join(targetDir, "id_rsa"), privateKeyPem, 0600)
 
 		if err != nil {
+			//TODO fix fatal for library
 			log.Fatal("Error persisting generated ssh private key:", err)
 		}
 	}
@@ -375,6 +381,7 @@ type streamSSHLayer struct {
 	sshListener  net.Listener
 	incoming     chan sshConn
 	clientConfig *ssh.ClientConfig
+	logger       *log.Logger
 }
 
 func (listener *streamSSHLayer) Accept() (net.Conn, error) {

@@ -57,10 +57,18 @@ type Store struct {
 }
 
 // New returns a new Store.
-func NewStore() *Store {
+// If debug is true, informational and debug messages are printed to os.Stderr
+func NewStore(debug bool) *Store {
+
+	logSink := ioutil.Discard
+
+	if debug {
+		logSink = os.Stderr
+	}
+
 	return &Store{
 		m:      make(map[string][]byte),
-		logger: log.New(os.Stderr, "[store] ", log.LstdFlags),
+		logger: log.New(logSink, "[distkv] ", log.LstdFlags),
 	}
 }
 
@@ -85,10 +93,10 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	//TODO add error return to newSSHTransport
-	sshTransport, raftTransport, err := newSSHTransport(s.RaftBind, s.RaftDir)
+	sshTransport, raftTransport, err := newSSHTransport(s.RaftBind, s.RaftDir, s.logger)
 
 	if err != nil {
-		log.Println("Error initializing ssh transport:", err)
+		s.logger.Println("Error initializing ssh transport:", err)
 		return err
 	}
 
@@ -128,7 +136,7 @@ func (s *Store) Open(enableSingle bool) error {
 
 			if s.raft.State() != raft.Leader {
 				//TODO Forward to current leader?
-				log.Println("No leader but received join request. Ignoring:", joinMessage)
+				s.logger.Println("No leader but received join request. Ignoring:", joinMessage)
 				joinMessage.returnChan <- false
 				close(joinMessage.returnChan)
 				continue
@@ -137,7 +145,7 @@ func (s *Store) Open(enableSingle bool) error {
 			err := s.join(joinMessage.joinAddr)
 
 			if err != nil {
-				log.Println("Error during join request:", err)
+				s.logger.Println("Error during join request:", err)
 				joinMessage.returnChan <- false
 			} else {
 				joinMessage.returnChan <- true
@@ -159,7 +167,7 @@ func (s *Store) Open(enableSingle bool) error {
 
 			if s.raft.State() != raft.Leader {
 				//TODO Forward to current leader?
-				log.Println("No leader but received leader request. Ignoring:", *leaderMessage.cmd)
+				s.logger.Println("No leader but received leader request. Ignoring:", *leaderMessage.cmd)
 				leaderMessage.returnChan <- false
 				close(leaderMessage.returnChan)
 				continue
@@ -168,7 +176,7 @@ func (s *Store) Open(enableSingle bool) error {
 			c := leaderMessage.cmd
 			sc, err := serializeCommand(c)
 			if err != nil {
-				log.Println("Error serializing command in leader request:", *leaderMessage.cmd)
+				s.logger.Println("Error serializing command in leader request:", *leaderMessage.cmd)
 				leaderMessage.returnChan <- false
 				close(leaderMessage.returnChan)
 				continue
@@ -176,7 +184,7 @@ func (s *Store) Open(enableSingle bool) error {
 
 			f := s.raft.Apply(sc, raftTimeout)
 			if err, ok := f.(error); ok {
-				log.Println("Error applying command in leader request:", *leaderMessage.cmd, err)
+				s.logger.Println("Error applying command in leader request:", *leaderMessage.cmd, err)
 				leaderMessage.returnChan <- false
 				close(leaderMessage.returnChan)
 				continue
@@ -203,19 +211,19 @@ func (s *Store) Join(joinAddr, raftAddr string) error {
 
 	serverConn, err := ssh.Dial("tcp", joinAddr, sshClientConfig)
 	if err != nil {
-		log.Printf("Server dial error: %s\n", err)
+		s.logger.Printf("Server dial error: %s\n", err)
 		return err
 	}
 
 	reply, _, err := serverConn.SendRequest(joinRequestType, true, []byte(raftAddr))
 
 	if err != nil {
-		log.Println("Error sending out-of-band join request:", err)
+		s.logger.Println("Error sending out-of-band join request:", err)
 		return err
 	}
 
 	if reply != true {
-		log.Printf("Error adding peer on join node %s: %s\n", err)
+		s.logger.Printf("Error adding peer on join node %s: %s\n", err)
 		return err
 	}
 
@@ -235,25 +243,25 @@ func (s *Store) leaderRequest(op *command) error {
 
 	serverConn, err := ssh.Dial("tcp", s.raft.Leader(), sshClientConfig)
 	if err != nil {
-		log.Printf("Server dial error: %s\n", err)
+		s.logger.Printf("Server dial error: %s\n", err)
 		return err
 	}
 
 	sc, err := serializeCommand(op)
 	if err != nil {
-		log.Printf("Command serialization error: %s\n", err)
+		s.logger.Printf("Command serialization error: %s\n", err)
 		return err
 	}
 
 	reply, _, err := serverConn.SendRequest(leaderMessageType, true, sc)
 
 	if err != nil {
-		log.Println("Error sending out-of-band leader request:", err)
+		s.logger.Println("Error sending out-of-band leader request:", err)
 		return err
 	}
 
 	if reply != true {
-		log.Printf("Error executing command on leader node %s: %s\n", err)
+		s.logger.Printf("Error executing command on leader node %s: %s\n", err)
 		return err
 	}
 
@@ -344,6 +352,7 @@ func (f *fsm) Apply(l *raft.Log) interface{} {
 	dsc, err := deserializeCommand(l.Data)
 
 	if err != nil {
+		//TODO fix fatal for library
 		log.Fatalf("error in deserializeCommand: %s\n", err)
 	}
 
@@ -353,6 +362,7 @@ func (f *fsm) Apply(l *raft.Log) interface{} {
 	case "delete":
 		return f.applyDelete(dsc.Key)
 	default:
+		//TODO fix fatal for library
 		log.Fatal("unrecognized command op: %s", dsc.Op)
 		return nil
 	}
