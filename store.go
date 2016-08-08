@@ -77,6 +77,7 @@ func NewStore(debug bool) *Store {
 func (s *Store) Open(enableSingle bool) error {
 	// Setup Raft configuration.
 	config := raft.DefaultConfig()
+	config.Logger = s.logger
 
 	// Check for any existing peers.
 	peers, err := readPeersJSON(filepath.Join(s.RaftDir, "peers.json"))
@@ -287,8 +288,7 @@ func (s *Store) Set(key string, value []byte) error {
 	}
 
 	if s.raft.State() != raft.Leader {
-		//return fmt.Errorf("not leader")
-
+		s.logger.Println("Forwarding Set command to leader: ", s.raft.Leader())
 		return s.leaderRequest(c)
 	}
 
@@ -314,7 +314,7 @@ func (s *Store) Delete(key string) error {
 	}
 
 	if s.raft.State() != raft.Leader {
-		//return fmt.Errorf("not leader")
+		s.logger.Println("Forwarding Delete command to leader: ", s.raft.Leader())
 
 		return s.leaderRequest(c)
 	}
@@ -350,10 +350,11 @@ type fsm Store
 // Apply applies a Raft log entry to the key-value store.
 func (f *fsm) Apply(l *raft.Log) interface{} {
 	dsc, err := deserializeCommand(l.Data)
+	fatalLogger := log.New(os.Stderr, "[distkv]", log.LstdFlags)
 
 	if err != nil {
 		//TODO fix fatal for library
-		log.Fatalf("error in deserializeCommand: %s\n", err)
+		fatalLogger.Fatalf("error in deserializeCommand: %s\n", err)
 	}
 
 	switch dsc.Op {
@@ -363,7 +364,7 @@ func (f *fsm) Apply(l *raft.Log) interface{} {
 		return f.applyDelete(dsc.Key)
 	default:
 		//TODO fix fatal for library
-		log.Fatal("unrecognized command op: %s", dsc.Op)
+		fatalLogger.Fatalf("unrecognized command op: %s", dsc.Op)
 		return nil
 	}
 }

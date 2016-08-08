@@ -48,7 +48,7 @@ func main() {
 
 	os.MkdirAll(raftDir, 0700)
 
-	s := distkv.NewStore(true)
+	s := distkv.NewStore(false)
 	s.RaftDir = raftDir
 	s.RaftBind = raftAddr
 	if err := s.Open(joinAddr == ""); err != nil {

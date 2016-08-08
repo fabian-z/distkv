@@ -67,7 +67,13 @@ func newSSHTransport(bindAddr string, raftDir string, logger *log.Logger) (*sshT
 	privateBytes, err := ioutil.ReadFile(filepath.Join(raftDir, "id_rsa"))
 	if err != nil {
 		logger.Println("Failed to load private key, trying to generate a new pair")
-		privateBytes = s.generateSSHKey(raftDir)
+		privateBytes, err = s.generateSSHKey(raftDir)
+
+		if err != nil {
+			//No usable SSH private key obtained
+			return nil, nil, err
+		}
+
 	}
 
 	private, err := ssh.ParsePrivateKey(privateBytes)
@@ -219,9 +225,8 @@ func (transport *sshTransport) readAuthorizedPeerKeys(path string) (pubs []ssh.P
 		pubkey, _, _, bytesRead, err = ssh.ParseAuthorizedKey(bytesRead)
 
 		if err != nil {
-			//TODO fix fatal for library
-			log.Fatal("Error parsing ssh publickey from authorized peers: \n", err)
-
+			transport.logger.Printf("error parsing ssh publickey from authorized peers: \n", err)
+			return
 		}
 
 		pubs = append(pubs, pubkey)
@@ -345,13 +350,14 @@ func (transport *sshTransport) checkHostKey(addr string, remote net.Addr, key ss
 
 }
 
-func (transport *sshTransport) generateSSHKey(targetDir string) (privateKeyPem []byte) {
+func (transport *sshTransport) generateSSHKey(targetDir string) (privateKeyPem []byte, err error) {
 
 	//generate 4096 bit rsa keypair
-	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	var privateKey *rsa.PrivateKey
+	privateKey, err = rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
-		//TODO fix fatal for libary
-		log.Fatal("Error generating private key:", err)
+		transport.logger.Println("error generating private key:", err)
+		return
 	}
 
 	privateKeyDer := x509.MarshalPKCS1PrivateKey(privateKey)
@@ -368,8 +374,7 @@ func (transport *sshTransport) generateSSHKey(targetDir string) (privateKeyPem [
 		err = ioutil.WriteFile(filepath.Join(targetDir, "id_rsa"), privateKeyPem, 0600)
 
 		if err != nil {
-			//TODO fix fatal for library
-			log.Fatal("Error persisting generated ssh private key:", err)
+			transport.logger.Println("rrror persisting generated ssh private key:", err)
 		}
 	}
 
