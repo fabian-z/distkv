@@ -9,7 +9,7 @@ import (
 )
 
 func Test_StoreOpen(t *testing.T) {
-	s := NewStore()
+	s := NewStore(true)
 	tmpDir, _ := ioutil.TempDir("", "store_test")
 	defer os.RemoveAll(tmpDir)
 
@@ -25,7 +25,7 @@ func Test_StoreOpen(t *testing.T) {
 }
 
 func Test_StoreOpenSingleNode(t *testing.T) {
-	s := NewStore()
+	s := NewStore(true)
 	tmpDir, _ := ioutil.TempDir("", "store_test")
 	defer os.RemoveAll(tmpDir)
 
