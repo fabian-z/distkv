@@ -191,6 +191,13 @@ func (s *Store) Open(enableSingle bool) error {
 				continue
 			}
 
+			if f.Error() != nil {
+				s.logger.Println("Error distributing command in leader request:", *leaderMessage.cmd, err)
+				leaderMessage.returnChan <- false
+				close(leaderMessage.returnChan)
+				continue
+			}
+
 			leaderMessage.returnChan <- true
 			close(leaderMessage.returnChan)
 		}
@@ -302,7 +309,7 @@ func (s *Store) Set(key string, value []byte) error {
 		return err
 	}
 
-	return nil
+	return f.Error()
 }
 
 // Delete deletes the given key.
@@ -329,7 +336,7 @@ func (s *Store) Delete(key string) error {
 		return err
 	}
 
-	return nil
+	return f.Error()
 }
 
 // Join joins a node, located at addr, to this store. The node must be ready to
