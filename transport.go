@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -213,9 +212,6 @@ func (transport *sshTransport) readAuthorizedPeerKeys(path string) (pubs []ssh.P
 	if len(bytesRead) == 0 {
 		return
 	}
-
-	//nice from far but far from nice
-	bytesRead = []byte(strings.TrimSpace(string(bytesRead)))
 
 	var rest int = len(bytesRead)
 
