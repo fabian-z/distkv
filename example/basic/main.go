@@ -64,6 +64,9 @@ func main() {
 
 	log.Println("distkv started successfully")
 
-	// Block forever.
-	select {}
+	if err := s.Close(); err != nil {
+		log.Println("distkv shutdown error:", err)
+	} else {
+		log.Println("distkv shutdown successfully")
+	}
 }
