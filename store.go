@@ -51,6 +51,7 @@ type Store struct {
 	checkHostKey     func(addr string, remote net.Addr, key ssh.PublicKey) error
 	sshTransport     *sshTransport
 	raftTransport    *raft.NetworkTransport
+	logStore         *raftboltdb.BoltStore
 
 	mu     sync.Mutex
 	m      map[string][]byte // The key-value store for the system.
@@ -125,13 +126,13 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	// Create the log store and stable store.
-	logStore, err := raftboltdb.NewBoltStore(filepath.Join(s.RaftDir, "raft.db"))
+	s.logStore, err = raftboltdb.NewBoltStore(filepath.Join(s.RaftDir, "raft.db"))
 	if err != nil {
 		return fmt.Errorf("new bolt store: %s", err)
 	}
 
 	// Instantiate the Raft systems.
-	ra, err := raft.NewRaft(config, (*fsm)(s), logStore, logStore, snapshots, peerStore, s.raftTransport)
+	ra, err := raft.NewRaft(config, (*fsm)(s), s.logStore, s.logStore, snapshots, peerStore, s.raftTransport)
 	if err != nil {
 		return fmt.Errorf("new raft: %s", err)
 	}
@@ -225,6 +226,11 @@ func (s *Store) Close() error {
 
 	if err := shutdownFuture.Error(); err != nil {
 		s.logger.Println("raft shutdown error:", err)
+		return err
+	}
+
+	if err := s.logStore.Close(); err != nil {
+		s.logger.Println("raftboltdb shutdown error:", err)
 		return err
 	}
 
