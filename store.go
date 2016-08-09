@@ -32,7 +32,9 @@ const (
 )
 
 var (
-	noAuthorizedPeers = errors.New("No authorized peers file")
+	noAuthorizedPeers  = errors.New("No authorized peers file")
+	ShutdownError      = errors.New("Store was shutdown")
+	AlreadyOpenedError = errors.New("Store was already opened")
 )
 
 type command struct {
@@ -47,9 +49,12 @@ type Store struct {
 	RaftBind         string
 	authMethodPubKey ssh.AuthMethod
 	checkHostKey     func(addr string, remote net.Addr, key ssh.PublicKey) error
+	sshTransport     *sshTransport
+	raftTransport    *raft.NetworkTransport
 
-	mu sync.Mutex
-	m  map[string][]byte // The key-value store for the system.
+	mu     sync.Mutex
+	m      map[string][]byte // The key-value store for the system.
+	opened bool
 
 	raft *raft.Raft // The consensus mechanism
 
@@ -75,6 +80,12 @@ func NewStore(debug bool) *Store {
 // Open opens the store. If enableSingle is set, and there are no existing peers,
 // then this node becomes the first node, and therefore leader, of the cluster.
 func (s *Store) Open(enableSingle bool) error {
+
+	if s.opened {
+		return AlreadyOpenedError
+	}
+	s.opened = true
+
 	// Setup Raft configuration.
 	config := raft.DefaultConfig()
 	config.Logger = s.logger
@@ -94,18 +105,18 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	//TODO add error return to newSSHTransport
-	sshTransport, raftTransport, err := newSSHTransport(s.RaftBind, s.RaftDir, s.logger)
+	s.sshTransport, s.raftTransport, err = newSSHTransport(s.RaftBind, s.RaftDir, s.logger)
 
 	if err != nil {
 		s.logger.Println("Error initializing ssh transport:", err)
 		return err
 	}
 
-	s.authMethodPubKey = ssh.PublicKeys(sshTransport.privateKey)
-	s.checkHostKey = sshTransport.checkHostKey
+	s.authMethodPubKey = ssh.PublicKeys(s.sshTransport.privateKey)
+	s.checkHostKey = s.sshTransport.checkHostKey
 
 	// Create peer storage.
-	peerStore := raft.NewJSONPeers(s.RaftDir, raftTransport)
+	peerStore := raft.NewJSONPeers(s.RaftDir, s.raftTransport)
 
 	// Create the snapshot store. This allows the Raft to truncate the log.
 	snapshots, err := raft.NewFileSnapshotStore(s.RaftDir, retainSnapshotCount, os.Stderr)
@@ -120,7 +131,7 @@ func (s *Store) Open(enableSingle bool) error {
 	}
 
 	// Instantiate the Raft systems.
-	ra, err := raft.NewRaft(config, (*fsm)(s), logStore, logStore, snapshots, peerStore, raftTransport)
+	ra, err := raft.NewRaft(config, (*fsm)(s), logStore, logStore, snapshots, peerStore, s.raftTransport)
 	if err != nil {
 		return fmt.Errorf("new raft: %s", err)
 	}
@@ -129,7 +140,7 @@ func (s *Store) Open(enableSingle bool) error {
 	go func() {
 
 		for {
-			joinMessage, notClosed := <-sshTransport.joinMessage
+			joinMessage, notClosed := <-s.sshTransport.joinMessage
 
 			if !notClosed {
 				return
@@ -160,7 +171,7 @@ func (s *Store) Open(enableSingle bool) error {
 	go func() {
 
 		for {
-			leaderMessage, notClosed := <-sshTransport.leaderMessage
+			leaderMessage, notClosed := <-s.sshTransport.leaderMessage
 
 			if !notClosed {
 				return
@@ -207,10 +218,34 @@ func (s *Store) Open(enableSingle bool) error {
 	return nil
 }
 
+// Close closes the store after stepping down as node/leader.
+func (s *Store) Close() error {
+
+	shutdownFuture := s.raft.Shutdown()
+
+	if err := shutdownFuture.Error(); err != nil {
+		s.logger.Println("raft shutdown error:", err)
+		return err
+	}
+
+	if err := s.raftTransport.Close(); err != nil {
+		s.logger.Println("raft transport close error:", err)
+		return err
+	}
+
+	s.logger.Println("successfully shutdown")
+	return nil
+
+}
+
 func (s *Store) Join(joinAddr, raftAddr string) error {
 
+	if err := s.checkState(); err != nil {
+		return err
+	}
+
 	sshClientConfig := &ssh.ClientConfig{
-		User: "raft",
+		User: protocolUser,
 		Auth: []ssh.AuthMethod{
 			s.authMethodPubKey,
 		},
@@ -239,10 +274,24 @@ func (s *Store) Join(joinAddr, raftAddr string) error {
 
 }
 
+func (s *Store) checkState() error {
+
+	if s.raft.State() == raft.Shutdown {
+		return ShutdownError
+	}
+
+	return nil
+
+}
+
 func (s *Store) leaderRequest(op *command) error {
 
+	if err := s.checkState(); err != nil {
+		return err
+	}
+
 	sshClientConfig := &ssh.ClientConfig{
-		User: "raft",
+		User: protocolUser,
 		Auth: []ssh.AuthMethod{
 			s.authMethodPubKey,
 		},
@@ -280,6 +329,10 @@ func (s *Store) leaderRequest(op *command) error {
 // Get returns the value for the given key.
 // TODO implement strongly consistent read with extra argument or func
 func (s *Store) Get(key string) ([]byte, error) {
+	if err := s.checkState(); err != nil {
+		return []byte{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.m[key], nil
@@ -287,6 +340,9 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Set sets the value for the given key.
 func (s *Store) Set(key string, value []byte) error {
+	if err := s.checkState(); err != nil {
+		return err
+	}
 
 	c := &command{
 		Op:    "set",
@@ -314,6 +370,9 @@ func (s *Store) Set(key string, value []byte) error {
 
 // Delete deletes the given key.
 func (s *Store) Delete(key string) error {
+	if err := s.checkState(); err != nil {
+		return err
+	}
 
 	c := &command{
 		Op:  "delete",

@@ -122,7 +122,7 @@ func newSSHTransport(bindAddr string, raftDir string, logger *log.Logger) (*sshT
 	}
 
 	sshClientConfig := &ssh.ClientConfig{
-		User: "raft",
+		User: protocolUser,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(private),
 		},
@@ -146,9 +146,8 @@ func newSSHTransport(bindAddr string, raftDir string, logger *log.Logger) (*sshT
 			nConn, err := listener.Accept()
 
 			if err != nil {
-				//TODO improve failure path after closing listener
-				//fix fatal for library
-				log.Fatal("failed to accept incoming connection:", err)
+				log.Println("failed to accept incoming connection, assuming closed listener and stopping goroutine: ", err)
+				return
 			}
 
 			go func() {
@@ -309,7 +308,7 @@ func (transport *sshTransport) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 
 	transport.logger.Println(conn.RemoteAddr(), "authenticate with", key.Type(), "for user", conn.User())
 
-	if conn.User() != "raft" {
+	if conn.User() != protocolUser {
 		return nil, errors.New("Wrong user for protocol offered by server")
 	}
 
