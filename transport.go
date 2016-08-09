@@ -221,7 +221,7 @@ func (transport *sshTransport) readAuthorizedPeerKeys(path string) (pubs []ssh.P
 		pubkey, _, _, bytesRead, err = ssh.ParseAuthorizedKey(bytesRead)
 
 		if err != nil {
-			transport.logger.Printf("error parsing ssh publickey from authorized peers: \n", err)
+			transport.logger.Println("error parsing ssh publickey from authorized peers:", err)
 			return
 		}
 

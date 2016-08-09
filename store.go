@@ -231,7 +231,7 @@ func (s *Store) Join(joinAddr, raftAddr string) error {
 	}
 
 	if reply != true {
-		s.logger.Printf("Error adding peer on join node %s: %s\n", err)
+		s.logger.Printf("Error adding peer on join node %s: %s\n", joinAddr, err)
 		return err
 	}
 
@@ -269,7 +269,7 @@ func (s *Store) leaderRequest(op *command) error {
 	}
 
 	if reply != true {
-		s.logger.Printf("Error executing command on leader node %s: %s\n", err)
+		s.logger.Printf("Error executing command on leader node %s: %s\n", s.raft.Leader(), err)
 		return err
 	}
 
