@@ -238,6 +238,9 @@ func (s *Store) Close() error {
 
 }
 
+// Join joins a node reachable under raftAddr, to the cluster lead by the
+// node reachable under joinAddr. The joined node must be ready to respond to Raft
+// communications at that raftAddr.
 func (s *Store) Join(joinAddr, raftAddr string) error {
 
 	if err := s.checkState(); err != nil {
@@ -398,8 +401,6 @@ func (s *Store) Delete(key string) error {
 	return f.Error()
 }
 
-// Join joins a node, located at addr, to this store. The node must be ready to
-// respond to Raft communications at that address.
 func (s *Store) join(addr string) error {
 	s.logger.Printf("received join request for remote node as %s", addr)
 
