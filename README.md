@@ -1,4 +1,4 @@
-# distkv ![Travis CI](https://travis-ci.org/fabian-z/distkv.svg)  ![goreportcard](https://goreportcard.com/badge/github.com/fabian-z/distkv)
+# distkv ![Travis CI](https://travis-ci.org/fabian-z/distkv.svg)  ![goreportcard](https://goreportcard.com/badge/github.com/fabian-z/distkv) [![GoDoc](https://godoc.org/github.com/fabian-z/distkv?status.svg)](https://godoc.org/github.com/fabian-z/distkv)
 
 `distkv` is a distributed K/V store library for Go powered by the [raft](https://raft.github.io/) consensus algorithm. Values are only changed when a majority of nodes in the cluster agree on the operation. Internal communication is secured and powered by the SSH protocol.
 
