@@ -46,8 +46,6 @@ func Test_StoreOpenSingleNode(t *testing.T) {
 		t.Fatalf("failed to set key: %s", err.Error())
 	}
 
-	// Wait for committed log entry to be applied.
-	time.Sleep(500 * time.Millisecond)
 	value, err := s.Get("foo")
 	if err != nil {
 		t.Fatalf("failed to get key: %s", err.Error())
@@ -60,14 +58,12 @@ func Test_StoreOpenSingleNode(t *testing.T) {
 		t.Fatalf("failed to delete key: %s", err.Error())
 	}
 
-	// Wait for committed log entry to be applied.
-	time.Sleep(500 * time.Millisecond)
 	value, err = s.Get("foo")
-	if err != nil {
-		t.Fatalf("failed to get key: %s", err.Error())
+	if err == nil {
+		t.Fatalf("no error getting empty key: %s", err.Error())
 	}
 	if !bytes.Equal(value, []byte{}) {
-		t.Fatalf("key has wrong value: %s", string(value))
+		t.Fatalf("empty key return is not zero value: %s", string(value))
 	}
 
 }
