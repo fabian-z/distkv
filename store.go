@@ -35,6 +35,7 @@ var (
 	noAuthorizedPeers  = errors.New("No authorized peers file")
 	ShutdownError      = errors.New("Store was shutdown")
 	AlreadyOpenedError = errors.New("Store was already opened")
+	KeyNotFoundError = errors.New("Key not present in store")
 )
 
 type command struct {
@@ -344,7 +345,12 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.m[key], nil
+
+	if val, ok := s.m[key]; ok {
+		return val, nil 	   
+	}
+
+	return []byte{}, KeyNotFoundError
 }
 
 // Set sets the value for the given key.
